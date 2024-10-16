@@ -1,4 +1,4 @@
-from .myopenai import myopenai
+from .SurveyAnalyzer import SurveyAnalyzer
 
 # エイリアスとしてmyopenaiを直接インポート可能にする
-myopenai = myopenai
+SurveyAnalyzer = SurveyAnalyzer

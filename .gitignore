@@ -7,3 +7,7 @@ __myfunc
 *.png
 commanddata.txt
 *.json
+
+build
+dist
+myopenai.egg-info

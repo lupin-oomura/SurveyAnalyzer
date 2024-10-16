@@ -1,17 +1,21 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='myopenai',
-    version='0.8.0',
+    name='surveyanalyzer',
+    version='1.0',
     packages=find_packages(),
     install_requires=[
         'openai',
         'python-dotenv',
-        'requests',
-        'webvtt-py',
+        'numpy',
+        'scikit-learn',
+        'matplotlib',
+        'wordcloud',
+        'jaconv',
+        'mecab-python3',
     ],
-    url='https://github.com/lupin-oomura/myopenai.git',
+    url='https://github.com/lupin-oomura/SurveyAnalyzer.git',
     author='Shin Oomura',
     author_email='shin.oomura@gmail.com',
-    description='A simple OpenAI function package',
+    description='A simple Comment Classification Tools',
 )

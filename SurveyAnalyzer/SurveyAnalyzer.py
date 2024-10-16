@@ -26,7 +26,7 @@ from collections import Counter
 from wordcloud import WordCloud
 
 
-class SurveyAnalysis :
+class SurveyAnalyzer :
     fld_workdata    = None
     l_text          = []
     d_vector        = {} #手法ごと(embedding/tfidf)に分かれてる（中身はリスト）
@@ -440,7 +440,7 @@ if __name__ == "__main__" :
     #初期化
     model       = 'gpt-4o-2024-08-06'
     model_emb   = 'text-embedding-3-small'
-    sa          = SurveyAnalysis("data", model, model_emb)
+    sa          = SurveyAnalyzer("data", model, model_emb)
     l_vector_type = ["embedding", "tfidf"]
     
     #サンプルデータ読み込み
