@@ -4,6 +4,7 @@ import jaconv #半角→全角用
 import queue
 import os, time
 from threading import Thread
+from collections import Counter
 
 # import myopenai
 from openai import OpenAI
@@ -163,7 +164,7 @@ class SurveyAnalyzer :
         optimal_clustersize = range_n_clusters[np.argmax(silhouette_scores)]
         return optimal_clustersize
 
-    #クラスター付け
+    #クラスタリング
     def clustering(self, vector_type:str, n_cluster:int) -> list :
         #vector_type : tfidf / embedding
         l_vector = self.d_vector[vector_type]
@@ -176,7 +177,7 @@ class SurveyAnalyzer :
         return l_cluster
 
 
-
+    #--- Embeddingのクラスタとtfidfのクラスタを統合 ----------------#
     def clustering_emb_x_tfidf(self) :
         # Assume l_text, l_cluster_by_embedding, and l_cluster_by_tfidf are provided
         N = len(self.l_text)
@@ -215,12 +216,6 @@ class SurveyAnalyzer :
         # for text, cluster_label in zip(self.l_text, cluster_labels_list):
         #     print(f"Text: {text}, Cluster: {cluster_label}")
         self.d_cluster["comb_ext"] = cluster_labels_list
-
-
-
-
-
-
 
     #---------------------------------------------#
     #クラスターのタイトル付け 
@@ -286,6 +281,106 @@ class SurveyAnalyzer :
         self.queue_progress.put(f'done')
         self.dic_cluster_info[vector_type] = dic2
         return self.dic_cluster_info
+
+    #---------------------------------------------#
+    # ユーザー指定のクラスタ操作 
+    #---------------------------------------------#
+    #--- ユーザー指定クラスタをセット ---------------#
+    def set_user_categories(self, l_clustername:list) :
+        lll = l_clustername.copy()
+        if 'その他' not in lll :
+            lll.append('その他')
+
+        dic = {}
+        for idx in range(len(lll)) :
+            dic[idx+1] = {'title': lll[idx]}
+        self.dic_cluster_info["user"] = dic
+
+    #--- ユーザー指定クラスタでクラスタリング ---------------#
+    def clustering_with_user_categories(self, l_clustername_:list=None) :
+        if l_clustername_ :
+            self.set_user_categories(l_clustername_)
+        self.dic_cluster_info['user'] = {k: self.dic_cluster_info['user'][k] for k in sorted(self.dic_cluster_info['user'], key=lambda x: int(x))}
+        txt_cluster = '\n'.join( [ f"{k},{v['title']}" for k,v in self.dic_cluster_info['user'].items() ] )
+
+        class text_cluster(BaseModel):
+            text_no         :   int
+            Cluster_No      :   int
+        class text_clusters(BaseModel):
+            l_cluster       :   List[text_cluster]
+
+        prompt_base = '''
+            以下の文章を分類したい。それぞれの文章がどの分類Noに該当するかを分析してください。
+
+            # 分類: """
+            Cluster_No, 分類名
+            {cluster}
+            """
+
+            # 文章: """
+            text_no, 文章
+            {text}
+            """
+        '''.replace("            ","").strip()
+
+        txt_text    = '\n'.join( [ f"{i}, {text}" for i, text in enumerate(self.l_text  ) ] )
+        prompt = prompt_base.format(cluster=txt_cluster, text=txt_text)
+
+        self.mo.delete_all_message()
+        self.mo.create_message_so("user", prompt)
+        response = self.mo.run_so(text_clusters)
+        l_text_cluster = [ x.model_dump() for x in response.l_cluster ]
+        
+        result_list = [None] * (max([x['text_no'] for x in l_text_cluster]) + 1)
+        for x in l_text_cluster:
+            result_list[x['text_no']] = x['Cluster_No']
+        self.d_cluster["user"] = result_list
+        count = Counter(result_list)
+        count = dict(sorted(count.items()))
+        print(count)
+
+    #--- その他に該当した文章から新たに分類名を新設 ---------------#
+    def bunseki_sonota(self) :
+        sonota_id = int( [ k for k,v in self.dic_cluster_info['user'].items() if v['title'] == 'その他' ][0] )
+        txt_text = ""
+        for i, x in enumerate(self.d_cluster['user']) :
+            if x == sonota_id :
+                txt_text += f"{i}, {self.l_text[i]}\n"
+
+        txt_bunrui = ','.join( [ x["title"] for x in self.dic_cluster_info['user'].values() ] )
+        prompt_base = '''
+            以下の文章を分類分けしたが、「その他」に分類されたものをより詳細に分析して、分類名を新設したい。
+            現在は `[{curr_bunrui}]` という分類名だが、ここに追加すべき新たな分類名を考えてください。
+
+            # "その他"に分類された文章: """
+            text_no, 文章
+            {text}
+            """
+        '''.replace("            ","").strip()
+
+        class new_cluster_name(BaseModel):
+            l_new_cluster_name  :   List[str]
+
+        prompt = prompt_base.format(curr_bunrui=txt_bunrui, text=txt_text)
+        self.mo.delete_all_message()
+        self.mo.create_message_so("user", prompt)
+        response = self.mo.run_so(new_cluster_name)
+
+        for i, x in enumerate(response.l_new_cluster_name) :
+            self.dic_cluster_info['user'][str(sonota_id+i)] = {'title':x}
+        self.dic_cluster_info['user'][str(sonota_id+len(response.l_new_cluster_name))] = {'title':'その他'}
+        
+
+
+
+
+
+
+
+
+
+
+
 
     #---------------------------------------------------------#
     #--- Word Cloud ------------------------------------------#
@@ -424,6 +519,16 @@ class SurveyAnalyzer :
 
         return dic
 
+    #--- クラスタごとのカウント ----------------------------#
+    def count_by_cluster(self, ctype) :
+        d = sa.d_cluster[ctype]
+        count = Counter(d)
+        count = dict(sorted(count.items()))
+        res = {}
+        for k,v in count.items() :
+            cname = self.dic_cluster_info[ctype][str(k)]["title"]
+            res[cname] = v
+        return res
 
 
     #--- Save ------------------------------------------------#
@@ -453,6 +558,7 @@ class SurveyAnalyzer :
 
 
 if __name__ == "__main__" :
+
     #初期化
     model       = 'gpt-4o-2024-08-06'
     model_emb   = 'text-embedding-3-small'
@@ -523,4 +629,21 @@ if __name__ == "__main__" :
 
     #保存
     sa.savedata()
+
+    #保存データの読み込み
+    sa.loaddata()
+    l_usercluster = ['研修時間', '実践的', '分かりやすさ', '改善の余地', '理論的']
+    sa.clustering_with_user_categories(l_usercluster)
+    sa.savedata()
+
+    sa.loaddata()
+    sa.bunseki_sonota()
+    sa.savedata()
+    sa.loaddata()
+    sa.clustering_with_user_categories()
+    sa.savedata()
+
+    sa.loaddata()
+    res = sa.count_by_cluster("user")
+    print(res)
 
