@@ -73,12 +73,14 @@ class SurveyAnalyzer :
 
 
     
-    def __init__(self, fld_workdata:str, gptmodel:str, embmodel:str="text-embedding-3-small") :
+    def __init__(self, fld_workdata:str) :
         if not os.path.exists(fld_workdata) :
             os.mkdir(fld_workdata)
         self.fld_workdata   = fld_workdata
         self.queue_progress = queue.Queue()
-        self.mo             = self.openai_so(gptmodel, embmodel)
+
+    def init_openai(self, gptmodel:str, embmodel:str="text-embedding-3-small") :
+        self.mo = self.openai_so(gptmodel, embmodel)
 
     def set_textdata(self, l_text:list) :
         self.l_text = l_text
@@ -210,8 +212,8 @@ class SurveyAnalyzer :
         # Assign cluster labels
         cluster_labels_list = fcluster(Z, num_clusters, criterion='maxclust').tolist()
         # Output the final cluster assignments
-        for text, cluster_label in zip(self.l_text, cluster_labels_list):
-            print(f"Text: {text}, Cluster: {cluster_label}")
+        # for text, cluster_label in zip(self.l_text, cluster_labels_list):
+        #     print(f"Text: {text}, Cluster: {cluster_label}")
         self.d_cluster["comb_ext"] = cluster_labels_list
 
 
@@ -220,9 +222,11 @@ class SurveyAnalyzer :
 
 
 
-
+    #---------------------------------------------#
     #クラスターのタイトル付け 
-    def generate_cluster_title(self, vector_type:str, model_:str=None) :
+    #---------------------------------------------#
+    def generate_cluster_title(self, vector_type:str, model_:str=None, n_max_charactors:int=10000) :
+        #n_max_charactors: 生成AIに投げる際の最大文字数
         #vector_type : tfidf / embedding / comb_ext
         l_cluster = self.d_cluster[vector_type]
         #クラスターごとにコメントを振り分け
@@ -236,20 +240,18 @@ class SurveyAnalyzer :
             dic_comments[cluster_no].append( self.l_text[i] )
 
         #プロンプトづくり
-        comments = ""
+        comment = ""
+        l_comments = []
         for cluster_no in range(1, max_cluster+1) :
-            comments += f"#Cluster No:{cluster_no}\n"
-            comments += '\n'.join('- ' + text.strip() for text in dic_comments[cluster_no])
-            comments += "\n"
-        prompt = f'''
-            文章群に対してクラスタリングを行い分類した。それぞれのクラスターに付けるタイトルを、そこに属している文章を元に考えてほしい。
-            また、そのクラスターの代表的な文章を5つ選出してください。
-
-            文章群: """
-            {comments}
-            """
-        '''
-        prompt = prompt.replace("            ", "").strip()
+            temp_comment  = f"#Cluster No:{cluster_no}\n"
+            temp_comment += '\n'.join('- ' + text.strip() for text in dic_comments[cluster_no])
+            temp_comment += "\n"
+            if len(comment) + len(temp_comment) <= n_max_charactors :
+                comment += temp_comment
+            else :
+                l_comments.append(comment)
+                comment = temp_comment
+        l_comments.append(comment)
 
         #GPT照会
         class ClusterInfo(BaseModel):
@@ -259,15 +261,29 @@ class SurveyAnalyzer :
         class ClusterInfoList(BaseModel):
             l_clusterinfo   :   List[ClusterInfo]
 
-        self.mo.delete_all_message()
-        self.mo.create_message_so("user", prompt)
-        response = self.mo.run_so(ClusterInfoList)
-        l_clusterinfo = [ x.model_dump() for x in response.l_clusterinfo ]
-
-        #清書
         dic2 = {}
-        for x in l_clusterinfo :
-            dic2[x['ClusterNo']] = {'title': x["ClusterTitle"], '代表的な文章': x["TipicalText"]}
+        for idx, comment in enumerate(l_comments) :
+            prompt = f'''
+                文章群に対してクラスタリングを行い分類した。それぞれのクラスターに付けるタイトルを、そこに属している文章を元に考えてほしい。
+                また、そのクラスターの代表的な文章を5つ選出してください。
+
+                文章群: """
+                {comment}
+                """
+            '''
+            prompt = prompt.replace("                ", "").strip()
+
+            self.mo.delete_all_message()
+            self.mo.create_message_so("user", prompt)
+            self.queue_progress.put(f'タイトル生成: {idx+1}/{len(l_comments)} ...')
+            response = self.mo.run_so(ClusterInfoList)
+            l_clusterinfo = [ x.model_dump() for x in response.l_clusterinfo ]
+
+            #清書
+            for x in l_clusterinfo :
+                dic2[x['ClusterNo']] = {'title': x["ClusterTitle"], '代表的な文章': x["TipicalText"]}
+
+        self.queue_progress.put(f'done')
         self.dic_cluster_info[vector_type] = dic2
         return self.dic_cluster_info
 
@@ -440,9 +456,10 @@ if __name__ == "__main__" :
     #初期化
     model       = 'gpt-4o-2024-08-06'
     model_emb   = 'text-embedding-3-small'
-    sa          = SurveyAnalyzer("data", model, model_emb)
+    sa          = SurveyAnalyzer("data")
+    sa.init_openai(model, model_emb)
     l_vector_type = ["embedding", "tfidf"]
-    
+
     #サンプルデータ読み込み
     with open("SurveyAnalyzer/samplecommentdata.txt", "r", encoding="utf-8") as f:
         txt = f.read()
@@ -494,7 +511,15 @@ if __name__ == "__main__" :
     sa.clustering_emb_x_tfidf()
 
     #クラスター情報生成（クラスター名をつける＆代表コメント抽出）
-    sa.generate_cluster_title("comb_ext")
+    thread = Thread(target=sa.generate_cluster_title,  kwargs={"vector_type": "comb_ext", "n_max_charactors": 500} )
+    thread.start()
+    while True:
+        message = sa.queue_progress.get()
+        print(message)
+        if message == 'done':
+            break
+        else:
+            pass
 
     #保存
     sa.savedata()
