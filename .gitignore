@@ -11,3 +11,4 @@ commanddata.txt
 build
 dist
 surveyanalyzer.egg-info
+*.bat

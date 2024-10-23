@@ -91,7 +91,7 @@ class SurveyAnalyzer :
             return self.l_text
         
         l_target = []
-        for i, v in enumerate(sa.d_cluster[clustertype]) :
+        for i, v in enumerate(self.d_cluster[clustertype]) :
             if v == clusterno :
                 l_target.append(sa.l_text[i])
         return l_target
