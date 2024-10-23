@@ -86,11 +86,21 @@ class SurveyAnalyzer :
     def set_textdata(self, l_text:list) :
         self.l_text = l_text
 
+    def get_text(self, clustertype:str=None, clusterno:int=None) :
+        if not clustertype :
+            return self.l_text
+        
+        l_target = []
+        for i, v in enumerate(sa.d_cluster[clustertype]) :
+            if v == clusterno :
+                l_target.append(sa.l_text[i])
+        return l_target
+    
     #---------------------------------------------------#
     #--- ベクトル化 -------------------------------------#
     #---------------------------------------------------#
     #embedding
-    def get_vector_embedding(self, model_emb:str=None) :
+    def calculate_vector_embedding(self, model_emb:str=None) :
         l_vector = []
         n_max = len(self.l_text)
         for txt in self.l_text :
@@ -102,7 +112,7 @@ class SurveyAnalyzer :
         self.queue_progress.put('done')
 
     # TF-IDF
-    def get_vector_tfidf(self, l_parts:list=["名詞", "動詞", "形容詞"]) :
+    def calculate_vector_tfidf(self, l_parts:list=["名詞", "動詞", "形容詞"]) :
         # 形態素解析を行う関数を定義する
         def tokenize(text):
             mecab = MeCab.Tagger('-Ochasen')
@@ -297,7 +307,8 @@ class SurveyAnalyzer :
         self.dic_cluster_info["user"] = dic
 
     #--- ユーザー指定クラスタでクラスタリング ---------------#
-    def clustering_with_user_categories(self, l_clustername_:list=None) :
+    def clustering_with_user_categories(self, l_clustername_:list=None, step=1000) :
+        #step: リストが大きい時にパンクするので、step個ずつに区切って処理する
         if l_clustername_ :
             self.set_user_categories(l_clustername_)
         self.dic_cluster_info['user'] = {k: self.dic_cluster_info['user'][k] for k in sorted(self.dic_cluster_info['user'], key=lambda x: int(x))}
@@ -323,13 +334,17 @@ class SurveyAnalyzer :
             """
         '''.replace("            ","").strip()
 
-        txt_text    = '\n'.join( [ f"{i}, {text}" for i, text in enumerate(self.l_text  ) ] )
-        prompt = prompt_base.format(cluster=txt_cluster, text=txt_text)
+        l_text_local = [ f"{i}, {text}" for i, text in enumerate(self.l_text  ) ]
+        l_text_cluster = []
+        step = 1000
+        for i in range(0, len(l_text_local), step) :
+            txt_text = '\n'.join( l_text_local[i:i+step] )
+            prompt = prompt_base.format(cluster=txt_cluster, text=txt_text)
 
-        self.mo.delete_all_message()
-        self.mo.create_message_so("user", prompt)
-        response = self.mo.run_so(text_clusters)
-        l_text_cluster = [ x.model_dump() for x in response.l_cluster ]
+            self.mo.delete_all_message()
+            self.mo.create_message_so("user", prompt)
+            response = self.mo.run_so(text_clusters)
+            l_text_cluster.extend( [ x.model_dump() for x in response.l_cluster ] )
         
         result_list = [None] * (max([x['text_no'] for x in l_text_cluster]) + 1)
         for x in l_text_cluster:
@@ -367,14 +382,36 @@ class SurveyAnalyzer :
         response = self.mo.run_so(new_cluster_name)
 
         for i, x in enumerate(response.l_new_cluster_name) :
-            self.dic_cluster_info['user'][str(sonota_id+i)] = {'title':x}
+            self.dic_cluster_info['user'][str(sonota_id+i)] = {'title':f"{x}(*)"}
         self.dic_cluster_info['user'][str(sonota_id+len(response.l_new_cluster_name))] = {'title':'その他'}
         
+    #---------------------------------------------------------#
+    # そのクラスターの代表的な質問を生成
+    #---------------------------------------------------------#
+    def generate_representative_inquires(self, l_targettext:list, n_inquires:int=3) :
+        class Response_Inquires(BaseModel) :
+            index       : int = Field(...,description="多さの順番（1が最も多い質問、2が次に多い質問、、、")
+            inquire     : str = Field(...,description="代表的な質問")
+            explanation : str = Field(...,description="解説や特記事項")
+        class Response_so(BaseModel) :
+            l_inquires  : List[Response_Inquires]
 
+        prompt_base = '''
+        以下の問い合わせ履歴を分析して、代表的な問い合わせ事例を多い順から{n_inquires}個教えてください。
+        
+        問い合わせ履歴: """
+        {rireki}
+        """
+        '''.replace("        ", "")
 
+        rireki = '\n'.join(l_targettext)
+        prompt = prompt_base.format(n_inquires=n_inquires, rireki=rireki)
+        self.mo.delete_all_message()
+        self.mo.create_message_so("user", prompt)
+        response = self.mo.run_so(Response_so)
+        l_inquires = [ x.model_dump() for x in response.l_inquires ]
 
-
-
+        return l_inquires
 
 
 
@@ -521,7 +558,7 @@ class SurveyAnalyzer :
 
     #--- クラスタごとのカウント ----------------------------#
     def count_by_cluster(self, ctype) :
-        d = sa.d_cluster[ctype]
+        d = self.d_cluster[ctype]
         count = Counter(d)
         count = dict(sorted(count.items()))
         res = {}
@@ -532,10 +569,12 @@ class SurveyAnalyzer :
 
 
     #--- Save ------------------------------------------------#
-    def savedata(self, fn:str="sa_data.json") :
+    def savedata(self, fn:str="sa_data.json", f_include_vectordata:bool=True) :
+        # f_include_vectordata: Falseだとベクターデータは保存しない（でかいから時間がかかる）
         dic = {}
         dic['l_text'        ] = self.l_text
-        dic['d_vector'      ] = self.d_vector
+        if f_include_vectordata :
+            dic['d_vector'      ] = self.d_vector
         dic['d_cluster'     ] = self.d_cluster
         dic['dic_cluster_info'] = self.dic_cluster_info
 
@@ -543,6 +582,11 @@ class SurveyAnalyzer :
         with open(file_path, "w", encoding='utf-8') as f:
             json.dump(dic, f, ensure_ascii=False, indent=4)
 
+    #ベクターデータだけを保存（でかいから、保存したいタイミングだけで保存できるように）
+    def save_vectordata(self, fn:str="sa_data_vector.json") :
+        file_path = os.path.join( self.fld_workdata, fn )
+        with open(file_path, "w", encoding='utf-8') as f:
+            json.dump(self.d_vector, f, ensure_ascii=False, indent=4)
 
     #--- Load ------------------------------------------------#
     def loaddata(self, fn:str="sa_data.json") :
@@ -551,9 +595,15 @@ class SurveyAnalyzer :
             dic = json.load(f)
 
         self.l_text         = dic['l_text'        ]
-        self.d_vector       = dic['d_vector'      ]
+        if "d_vector" in dic.keys() :
+            self.d_vector       = dic['d_vector'      ]
         self.d_cluster      = dic['d_cluster'     ]
         self.dic_cluster_info = dic['dic_cluster_info']
+
+    def load_vectordata(self, fn:str="sa_data_vector.json") :
+        file_path = os.path.join( self.fld_workdata, fn )
+        with open(file_path, "r", encoding='utf-8') as f:
+            self.d_vector = json.load(f)
 
 
 
@@ -587,12 +637,12 @@ if __name__ == "__main__" :
     for vector_type in l_vector_type :
         if vector_type == "tfidf" :
             #ベクトル化（TF-IDF）
-            sa.get_vector_tfidf(l_parts=["名詞","動詞"])
+            sa.calculate_vector_tfidf(l_parts=["名詞","動詞"])
         elif vector_type == "embedding" :
             # #ベクトル化（エンベディング）
-            # sa.get_vector_embedding()
+            # sa.calculate_vector_embedding()
             #ベクトル化（エンベディング）--- 別スレッドでの実行例
-            thread = Thread(target=sa.get_vector_embedding, args=())
+            thread = Thread(target=sa.calculate_vector_embedding, args=())
             thread.start()
             while True:
                 message = sa.queue_progress.get()
